@@ -16,6 +16,7 @@ github.com/envoyproxy/go-control-plane v0.9.9-0.20201210154907-fd9021fe5dad/go.m
 github.com/envoyproxy/protoc-gen-validate v0.1.0/go.mod h1:iSmxcyjqTsJpI2R4NaDN7+kN2VEUnK/pcBlmesArF7c=
 github.com/fsnotify/fsnotify v1.4.9/go.mod h1:znqG4EE+3YCdAaPaxE2ZRY/06pZUdp0tY4IgpuI1SZQ=
 github.com/ghodss/yaml v1.0.0/go.mod h1:4dBDuWmgqj2HViK6kFavaiC9ZROes6MMH2rRYeMEF04=
+github.com/go-kratos/kratos v1.0.0 h1:BEtuBTfdFqi8kIZlyx1Vxi97wB2i91b4mTw8ELQQ7rA=
 github.com/go-kratos/kratos/v2 v2.0.0-20210118115010-df0fd01b0eb1 h1:XHP98wYxYeNTOXMrJ+H/Ly6xTUtrjuymfooySAynPnU=
 github.com/go-kratos/kratos/v2 v2.0.0-20210118115010-df0fd01b0eb1/go.mod h1:EDLe4G1gwPWZ0cYDI+izJS7otXowySTsLBaBB1kDENo=
 github.com/go-kratos/kratos/v2 v2.0.0-alpha2.0.20210220111209-2a011cd288f5 h1:osgr/KIPDyMxpE4QmtX552Rn7pfMtocqJfTKGuJ/Vmo=

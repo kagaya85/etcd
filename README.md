@@ -1,2 +1,2 @@
 # etcd
-Etcd is a service discovery.
+Etcd sdk for kratos registry and config center.
