@@ -5,8 +5,10 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/coreos/etcd/storage/storagepb"
 	"github.com/go-kratos/etcd"
 	"github.com/go-kratos/kratos/v2/registry"
+	"go.etcd.io/etcd/clientv3"
 )
 
 var (
@@ -28,17 +30,19 @@ type watcher struct {
 	cli    *etcd.Client
 	cancel context.CancelFunc
 	set    *serviceSet
+	ch     clientv3.WatchChan
 }
 
 func newWatcher(set *serviceSet, cli *etcd.Client) *watcher {
-	watch := &watcher{
+	w := &watcher{
 		name:  set.serviceName,
 		event: make(chan struct{}, 1),
 		cli:   cli,
 		set:   set,
 	}
-	go watch.watch()
-	return watch
+	w.ch = w.cli.Watch(w.ctx, w.name)
+	go w.watch()
+	return w
 }
 
 func (w *watcher) Next() (svrs []*registry.ServiceInstance, err error) {
@@ -58,6 +62,7 @@ func (w *watcher) Next() (svrs []*registry.ServiceInstance, err error) {
 }
 
 func (w *watcher) Close() error {
+	w.cancel()
 	return nil
 }
 
@@ -66,7 +71,33 @@ func (w *watcher) watch() {
 		select {
 		case <-w.ctx.Done():
 			return
-		case <-w.cli.Watch(w.ctx, w.name):
+		default:
 		}
+		ss, _ := w.set.services.Load().([]*registry.ServiceInstance)
+		smap := make(map[string]*registry.ServiceInstance, len(ss))
+		for _, s := range ss {
+			smap[s.ID] = s
+		}
+		for wresp := range w.ch {
+			if wresp.Err() != nil || wresp.Canceled {
+				w.ch = w.cli.Watch(w.ctx, w.name)
+				continue
+			}
+
+			for _, ev := range wresp.Events {
+				service := decode(ev.Kv.Value)
+				switch ev.Type {
+				case storagepb.PUT:
+					smap[string(ev.Kv.Key)] = service
+				case storagepb.DELETE:
+					delete(smap, string(ev.Kv.Key))
+				}
+			}
+		}
+		newss := make([]*registry.ServiceInstance, len(smap))
+		for _, s := range smap {
+			newss = append(newss, s)
+		}
+		w.set.services.Store(newss)
 	}
 }

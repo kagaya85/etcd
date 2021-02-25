@@ -10,53 +10,75 @@ import (
 
 	"github.com/go-kratos/etcd"
 	"github.com/go-kratos/kratos/v2/registry"
-	"go.etcd.io/etcd/clientv3"
 )
 
 var (
 	_ registry.Registry = &Registry{}
 )
 
-// Config is etcd registry config
-type Config struct {
-	clientv3.Config
+const (
+	prefix = "/kratos/registry"
+)
+
+type options struct {
 	// register service under prefixPath
-	PrefixPath string
+	prefixPath string
+}
+
+// Option is etcd registry opt
+type Option func(o *options)
+
+// PrefixPath with etcd prefix path.
+func PrefixPath(prefix string) Option {
+	return func(o *options) { o.prefixPath = prefix }
 }
 
 // Registry is etcd registry
 type Registry struct {
-	cfg      *Config
+	opt      *options
 	cli      *etcd.Client
 	registry map[string]*serviceSet
 	lock     sync.RWMutex
 }
 
 // New creates etcd registry
-func New(cfg *Config) (r *Registry, err error) {
-	cli, err := etcd.NewClient(cfg.Config)
+func New(cli *etcd.Client, opts ...Option) (r *Registry, err error) {
 	if err != nil {
 		return
 	}
+	opt := &options{
+		prefixPath: prefix,
+	}
+	for _, op := range opts {
+		op(opt)
+	}
 	r = &Registry{
-		cfg: cfg,
 		cli: cli,
+		opt: opt,
 	}
 	return
 }
 
 func (r *Registry) serviceKey(name, uuid string) string {
-	return fmt.Sprintf("%s/%s/%s", r.cfg.PrefixPath, name, uuid)
+	return fmt.Sprintf("%s/%s/%s", r.opt.prefixPath, name, uuid)
+}
+
+func encode(s *registry.ServiceInstance) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+func decode(ds []byte) *registry.ServiceInstance {
+	var s *registry.ServiceInstance
+	json.Unmarshal(ds, &s)
+	return s
 }
 
 // Register the registration.
 func (r *Registry) Register(ctx context.Context, service *registry.ServiceInstance) error {
 	key := r.serviceKey(service.Name, service.ID)
-	value, err := json.Marshal(service)
-	if err != nil {
-		return err
-	}
-	return r.cli.Put(context.Background(), key, string(value))
+	value := encode(service)
+	return r.cli.Put(context.Background(), key, value)
 }
 
 // Deregister the registration.
