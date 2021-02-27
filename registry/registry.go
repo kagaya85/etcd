@@ -8,8 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/go-kratos/etcd"
 	"github.com/go-kratos/kratos/v2/registry"
+	"go.etcd.io/etcd/clientv3"
 )
 
 var (
@@ -23,6 +23,7 @@ const (
 type options struct {
 	// register service under prefixPath
 	prefixPath string
+	ttl        uint64
 }
 
 // Option is etcd registry opt
@@ -33,16 +34,20 @@ func PrefixPath(prefix string) Option {
 	return func(o *options) { o.prefixPath = prefix }
 }
 
+func WithTTL(ttl uint64) Option {
+	return func(o *options) { o.ttl = ttl }
+}
+
 // Registry is etcd registry
 type Registry struct {
 	opt      *options
-	cli      *etcd.Client
+	cli      *clientv3.Client
 	registry map[string]*serviceSet
 	lock     sync.RWMutex
 }
 
 // New creates etcd registry
-func New(cli *etcd.Client, opts ...Option) (r *Registry, err error) {
+func New(cli *clientv3.Client, opts ...Option) (r *Registry, err error) {
 	if err != nil {
 		return
 	}
@@ -75,16 +80,34 @@ func decode(ds []byte) *registry.ServiceInstance {
 }
 
 // Register the registration.
-func (r *Registry) Register(ctx context.Context, service *registry.ServiceInstance) error {
+func (r *Registry) Register(ctx context.Context, service *registry.ServiceInstance) (err error) {
 	key := r.serviceKey(service.Name, service.ID)
 	value := encode(service)
-	return r.cli.Put(context.Background(), key, value)
+	lease := clientv3.NewLease(r.cli)
+	var putOpt []clientv3.OpOption
+	var lrp *clientv3.LeaseCreateResponse
+	if r.opt.ttl > 0 {
+		lrp, err = lease.Create(context.TODO(), int64(r.opt.ttl))
+		if err != nil {
+			return err
+		}
+		putOpt = append(putOpt, clientv3.WithLease(clientv3.LeaseID(lrp.ID)))
+	}
+	_, err = r.cli.Put(context.Background(), key, value, putOpt...)
+	if err != nil {
+		return
+	}
+	if lrp.ID > 0 {
+		r.cli.KeepAlive(context.TODO(), clientv3.LeaseID(lrp.ID))
+	}
+	return err
 }
 
 // Deregister the registration.
-func (r *Registry) Deregister(ctx context.Context, service *registry.ServiceInstance) error {
+func (r *Registry) Deregister(ctx context.Context, service *registry.ServiceInstance) (err error) {
 	key := r.serviceKey(service.Name, service.ID)
-	return r.cli.Delete(context.Background(), key)
+	_, err = r.cli.Delete(context.Background(), key)
+	return err
 }
 
 // Service return the service instances in memory according to the service name.

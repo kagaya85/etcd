@@ -27,13 +27,13 @@ type watcher struct {
 	event  chan struct{}
 	name   string
 	ctx    context.Context
-	cli    *etcd.Client
+	cli    *clientv3.Client
 	cancel context.CancelFunc
 	set    *serviceSet
 	ch     clientv3.WatchChan
 }
 
-func newWatcher(set *serviceSet, cli *etcd.Client) *watcher {
+func newWatcher(set *serviceSet, cli *clientv3.Client) *watcher {
 	w := &watcher{
 		name:  set.serviceName,
 		event: make(chan struct{}, 1),
