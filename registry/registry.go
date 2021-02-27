@@ -47,10 +47,7 @@ type Registry struct {
 }
 
 // New creates etcd registry
-func New(cli *clientv3.Client, opts ...Option) (r *Registry, err error) {
-	if err != nil {
-		return
-	}
+func New(cli *clientv3.Client, opts ...Option) (r *Registry) {
 	opt := &options{
 		prefixPath: prefix,
 	}
@@ -97,8 +94,8 @@ func (r *Registry) Register(ctx context.Context, service *registry.ServiceInstan
 	if err != nil {
 		return
 	}
-	if lrp.ID > 0 {
-		r.cli.KeepAlive(context.TODO(), clientv3.LeaseID(lrp.ID))
+	if lrp != nil {
+		_, err = r.cli.KeepAlive(context.TODO(), clientv3.LeaseID(lrp.ID))
 	}
 	return err
 }

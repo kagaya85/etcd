@@ -6,7 +6,6 @@ import (
 	"sync/atomic"
 
 	"github.com/coreos/etcd/storage/storagepb"
-	"github.com/go-kratos/etcd"
 	"github.com/go-kratos/kratos/v2/registry"
 	"go.etcd.io/etcd/clientv3"
 )
@@ -18,7 +17,7 @@ var (
 type serviceSet struct {
 	serviceName string
 	watcher     *watcher
-	cli         *etcd.Client
+	cli         *clientv3.Client
 	services    *atomic.Value
 	lock        sync.RWMutex
 }
@@ -99,5 +98,10 @@ func (w *watcher) watch() {
 			newss = append(newss, s)
 		}
 		w.set.services.Store(newss)
+		select {
+		case w.event <- struct{}{}:
+		default:
+		}
+
 	}
 }
