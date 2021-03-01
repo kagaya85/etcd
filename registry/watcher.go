@@ -1,17 +1,21 @@
 package registry
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
 	"github.com/coreos/etcd/storage/storagepb"
+	"github.com/go-kratos/kratos/v2/log"
 	"github.com/go-kratos/kratos/v2/registry"
 	"go.etcd.io/etcd/clientv3"
 )
 
 var (
-	_ registry.Watcher = &watcher{}
+	_      registry.Watcher = &watcher{}
+	logger                  = log.NewHelper("kratos/etcd", log.DefaultLogger)
 )
 
 type serviceSet struct {
@@ -24,7 +28,8 @@ type serviceSet struct {
 
 type watcher struct {
 	event  chan struct{}
-	name   string
+	prefix string
+	key    string
 	ctx    context.Context
 	cli    *clientv3.Client
 	cancel context.CancelFunc
@@ -32,16 +37,35 @@ type watcher struct {
 	ch     clientv3.WatchChan
 }
 
-func newWatcher(set *serviceSet, cli *clientv3.Client) *watcher {
+func newWatcher(prefix string, set *serviceSet, cli *clientv3.Client) *watcher {
 	w := &watcher{
-		name:  set.serviceName,
-		event: make(chan struct{}, 1),
-		cli:   cli,
-		set:   set,
+		prefix: prefix,
+		event:  make(chan struct{}, 1),
+		cli:    cli,
+		set:    set,
 	}
-	w.ch = w.cli.Watch(w.ctx, w.name)
+	w.key = fmt.Sprintf("%s/%s", w.prefix, set.serviceName)
+	w.init()
+	w.ch = w.cli.Watch(context.Background(), w.key, clientv3.WithPrefix())
 	go w.watch()
 	return w
+}
+
+func (w *watcher) init() {
+	resp, err := w.cli.Get(context.Background(), w.key, clientv3.WithPrefix())
+	if err != nil {
+		return
+	}
+	newss := make([]*registry.ServiceInstance, 0, len(resp.Kvs))
+	for _, kv := range resp.Kvs {
+		service, err := decode(kv.Value)
+		if err != nil {
+			logger.Errorf("failed to decode service of key:%s, value:%s", string(kv.Key), string(kv.Value))
+			continue
+		}
+		newss = append(newss, service)
+	}
+	w.set.services.Store(newss)
 }
 
 func (w *watcher) Next() (svrs []*registry.ServiceInstance, err error) {
@@ -50,6 +74,7 @@ func (w *watcher) Next() (svrs []*registry.ServiceInstance, err error) {
 		err = w.ctx.Err()
 		return
 	case <-w.event:
+		fmt.Println("get")
 	}
 	ss, ok := w.set.services.Load().([]*registry.ServiceInstance)
 	if ok {
@@ -67,39 +92,45 @@ func (w *watcher) Close() error {
 
 func (w *watcher) watch() {
 	for {
+		var wresp clientv3.WatchResponse
 		select {
 		case <-w.ctx.Done():
 			return
-		default:
+		case wresp = <-w.ch:
+		}
+		if wresp.Err() != nil || wresp.Canceled {
+			w.ch = w.cli.Watch(context.Background(), w.key, clientv3.WithPrefix())
+			continue
 		}
 		ss, _ := w.set.services.Load().([]*registry.ServiceInstance)
 		smap := make(map[string]*registry.ServiceInstance, len(ss))
 		for _, s := range ss {
 			smap[s.ID] = s
 		}
-		for wresp := range w.ch {
-			if wresp.Err() != nil || wresp.Canceled {
-				w.ch = w.cli.Watch(w.ctx, w.name)
-				continue
-			}
+		for _, ev := range wresp.Events {
 
-			for _, ev := range wresp.Events {
-				service := decode(ev.Kv.Value)
-				switch ev.Type {
-				case storagepb.PUT:
-					smap[string(ev.Kv.Key)] = service
-				case storagepb.DELETE:
-					delete(smap, string(ev.Kv.Key))
+			insName := bytes.TrimPrefix(ev.Kv.Key, []byte(w.key+"/"))
+			fmt.Printf("get event:%s, key:%s\n", ev.Type.String(), string(insName))
+			switch ev.Type {
+			case storagepb.PUT:
+				service, err := decode(ev.Kv.Value)
+				if err != nil {
+					logger.Errorf("failed to decode service of key:%s, value:%s", string(ev.Kv.Key), string(ev.Kv.Value))
+					continue
 				}
+				smap[string(insName)] = service
+			case storagepb.DELETE:
+				delete(smap, string(insName))
 			}
 		}
-		newss := make([]*registry.ServiceInstance, len(smap))
+		newss := make([]*registry.ServiceInstance, 0, len(smap))
 		for _, s := range smap {
 			newss = append(newss, s)
 		}
 		w.set.services.Store(newss)
 		select {
 		case w.event <- struct{}{}:
+			fmt.Println("send")
 		default:
 		}
 

@@ -13,7 +13,8 @@ import (
 )
 
 var (
-	_ registry.Registry = &Registry{}
+	_ registry.Registrar  = &Registry{}
+	_ registry.Discoverer = &Registry{}
 )
 
 const (
@@ -55,14 +56,15 @@ func New(cli *clientv3.Client, opts ...Option) (r *Registry) {
 		op(opt)
 	}
 	r = &Registry{
-		cli: cli,
-		opt: opt,
+		cli:      cli,
+		opt:      opt,
+		registry: make(map[string]*serviceSet),
 	}
 	return
 }
 
-func (r *Registry) serviceKey(name, uuid string) string {
-	return fmt.Sprintf("%s/%s/%s", r.opt.prefixPath, name, uuid)
+func serviceKey(prefix, name, uuid string) string {
+	return fmt.Sprintf("%s/%s/%s", prefix, name, uuid)
 }
 
 func encode(s *registry.ServiceInstance) string {
@@ -70,21 +72,20 @@ func encode(s *registry.ServiceInstance) string {
 	return string(b)
 }
 
-func decode(ds []byte) *registry.ServiceInstance {
-	var s *registry.ServiceInstance
-	json.Unmarshal(ds, &s)
-	return s
+func decode(ds []byte) (ins *registry.ServiceInstance, err error) {
+	err = json.Unmarshal(ds, &ins)
+	return
 }
 
 // Register the registration.
 func (r *Registry) Register(ctx context.Context, service *registry.ServiceInstance) (err error) {
-	key := r.serviceKey(service.Name, service.ID)
+	key := serviceKey(r.opt.prefixPath, service.Name, service.ID)
 	value := encode(service)
 	lease := clientv3.NewLease(r.cli)
 	var putOpt []clientv3.OpOption
 	var lrp *clientv3.LeaseCreateResponse
 	if r.opt.ttl > 0 {
-		lrp, err = lease.Create(context.TODO(), int64(r.opt.ttl))
+		lrp, err = lease.Create(context.Background(), int64(r.opt.ttl))
 		if err != nil {
 			return err
 		}
@@ -102,13 +103,13 @@ func (r *Registry) Register(ctx context.Context, service *registry.ServiceInstan
 
 // Deregister the registration.
 func (r *Registry) Deregister(ctx context.Context, service *registry.ServiceInstance) (err error) {
-	key := r.serviceKey(service.Name, service.ID)
+	key := serviceKey(r.opt.prefixPath, service.Name, service.ID)
 	_, err = r.cli.Delete(context.Background(), key)
 	return err
 }
 
 // Service return the service instances in memory according to the service name.
-func (r *Registry) Service(ctx context.Context, name string) (services []*registry.ServiceInstance, err error) {
+func (r *Registry) Fetch(ctx context.Context, name string) (services []*registry.ServiceInstance, err error) {
 	r.lock.RLock()
 	defer r.lock.RUnlock()
 	set := r.registry[name]
@@ -139,7 +140,7 @@ func (r *Registry) Watch(ctx context.Context, name string) (registry.Watcher, er
 		serviceName: name,
 	}
 	r.registry[name] = set
-	w := newWatcher(set, r.cli)
+	w := newWatcher(r.opt.prefixPath, set, r.cli)
 	w.ctx, w.cancel = context.WithCancel(context.Background())
 	set.lock.Lock()
 	set.watcher = w
