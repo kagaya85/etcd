@@ -49,7 +49,7 @@ func TestRegistry(t *testing.T) {
 	}
 	time.Sleep(time.Second)
 
-	res, err := r.Service(ctx, s.Name)
+	res, err := r.GetService(ctx, s.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestRegistry(t *testing.T) {
 	}
 	time.Sleep(time.Second)
 
-	res, err = r.Service(ctx, s.Name)
+	res, err = r.GetService(ctx, s.Name)
 	if err != nil {
 		t.Fatal(err)
 	}

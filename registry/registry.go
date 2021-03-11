@@ -110,8 +110,8 @@ func (r *Registry) Deregister(ctx context.Context, service *registry.ServiceInst
 	return err
 }
 
-// Service return the service instances in memory according to the service name.
-func (r *Registry) Service(ctx context.Context, name string) ([]*registry.ServiceInstance, error) {
+// GetService return the service instances in memory according to the service name.
+func (r *Registry) GetService(ctx context.Context, name string) ([]*registry.ServiceInstance, error) {
 	key := fmt.Sprintf("%s/%s", r.opts.namespace, name)
 	resp, err := r.kv.Get(ctx, key, clientv3.WithPrefix())
 	if err != nil {
