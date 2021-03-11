@@ -2,152 +2,134 @@ package registry
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"sync"
-	"sync/atomic"
+	"time"
 
 	"github.com/go-kratos/kratos/v2/registry"
-	"go.etcd.io/etcd/clientv3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 var (
-	_ registry.Registrar  = &Registry{}
-	_ registry.Discoverer = &Registry{}
+	_ registry.Registrar = &Registry{}
+	_ registry.Discovery = &Registry{}
 )
 
-const (
-	prefix = "/kratos/registry"
-)
-
-type options struct {
-	// register service under prefixPath
-	prefixPath string
-	ttl        uint64
-}
-
-// Option is etcd registry opt
+// Option is etcd registry option.
 type Option func(o *options)
 
-// PrefixPath with etcd prefix path.
-func PrefixPath(prefix string) Option {
-	return func(o *options) { o.prefixPath = prefix }
+type options struct {
+	ctx       context.Context
+	namespace string
+	ttl       time.Duration
 }
 
-func WithTTL(ttl uint64) Option {
+// Context with registry context.
+func Context(ctx context.Context) Option {
+	return func(o *options) { o.ctx = ctx }
+}
+
+// Namespace with registry namespance.
+func Namespace(ns string) Option {
+	return func(o *options) { o.namespace = ns }
+}
+
+// RegisterTTL with register ttl.
+func RegisterTTL(ttl time.Duration) Option {
 	return func(o *options) { o.ttl = ttl }
 }
 
-// Registry is etcd registry
+// Registry is etcd registry.
 type Registry struct {
-	opt      *options
-	cli      *clientv3.Client
-	registry map[string]*serviceSet
-	lock     sync.RWMutex
+	opts   *options
+	client *clientv3.Client
+	kv     clientv3.KV
+	lease  clientv3.Lease
 }
 
 // New creates etcd registry
-func New(cli *clientv3.Client, opts ...Option) (r *Registry) {
-	opt := &options{
-		prefixPath: prefix,
+func New(client *clientv3.Client, opts ...Option) (r *Registry) {
+	options := &options{
+		ctx:       context.Background(),
+		namespace: "/microservices",
+		ttl:       time.Second * 15,
 	}
-	for _, op := range opts {
-		op(opt)
+	for _, o := range opts {
+		o(options)
 	}
-	r = &Registry{
-		cli:      cli,
-		opt:      opt,
-		registry: make(map[string]*serviceSet),
+	return &Registry{
+		opts:   options,
+		client: client,
+		kv:     clientv3.NewKV(client),
 	}
-	return
-}
-
-func serviceKey(prefix, name, uuid string) string {
-	return fmt.Sprintf("%s/%s/%s", prefix, name, uuid)
-}
-
-func encode(s *registry.ServiceInstance) string {
-	b, _ := json.Marshal(s)
-	return string(b)
-}
-
-func decode(ds []byte) (ins *registry.ServiceInstance, err error) {
-	err = json.Unmarshal(ds, &ins)
-	return
 }
 
 // Register the registration.
-func (r *Registry) Register(ctx context.Context, service *registry.ServiceInstance) (err error) {
-	key := serviceKey(r.opt.prefixPath, service.Name, service.ID)
-	value := encode(service)
-	lease := clientv3.NewLease(r.cli)
-	var putOpt []clientv3.OpOption
-	var lrp *clientv3.LeaseCreateResponse
-	if r.opt.ttl > 0 {
-		lrp, err = lease.Create(context.Background(), int64(r.opt.ttl))
-		if err != nil {
-			return err
-		}
-		putOpt = append(putOpt, clientv3.WithLease(clientv3.LeaseID(lrp.ID)))
-	}
-	_, err = r.cli.Put(context.Background(), key, value, putOpt...)
+func (r *Registry) Register(ctx context.Context, service *registry.ServiceInstance) error {
+	key := fmt.Sprintf("%s/%s/%s", r.opts.namespace, service.Name, service.ID)
+	value, err := marshal(service)
 	if err != nil {
-		return
+		return err
 	}
-	if lrp != nil {
-		_, err = r.cli.KeepAlive(context.TODO(), clientv3.LeaseID(lrp.ID))
+	if r.lease != nil {
+		r.lease.Close()
 	}
-	return err
+	r.lease = clientv3.NewLease(r.client)
+	grant, err := r.lease.Grant(ctx, int64(r.opts.ttl.Seconds()))
+	if err != nil {
+		return err
+	}
+	_, err = r.client.Put(ctx, key, value, clientv3.WithLease(grant.ID))
+	if err != nil {
+		return err
+	}
+	hb, err := r.client.KeepAlive(ctx, clientv3.LeaseID(grant.ID))
+	go func() {
+		for {
+			select {
+			case _, ok := <-hb:
+				if !ok {
+					return
+				}
+			case <-r.opts.ctx.Done():
+				return
+			}
+		}
+	}()
+	return nil
 }
 
 // Deregister the registration.
-func (r *Registry) Deregister(ctx context.Context, service *registry.ServiceInstance) (err error) {
-	key := serviceKey(r.opt.prefixPath, service.Name, service.ID)
-	_, err = r.cli.Delete(context.Background(), key)
+func (r *Registry) Deregister(ctx context.Context, service *registry.ServiceInstance) error {
+	defer func() {
+		if r.lease != nil {
+			r.lease.Close()
+		}
+	}()
+	key := fmt.Sprintf("%s/%s/%s", r.opts.namespace, service.Name, service.ID)
+	_, err := r.client.Delete(ctx, key)
 	return err
 }
 
-// Service return the service instances in memory according to the service name.
-func (r *Registry) Fetch(ctx context.Context, name string) (services []*registry.ServiceInstance, err error) {
-	r.lock.RLock()
-	defer r.lock.RUnlock()
-	set := r.registry[name]
-	if set == nil {
-		return nil, fmt.Errorf("service %s not watch in registry", name)
+// GetService return the service instances in memory according to the service name.
+func (r *Registry) GetService(ctx context.Context, name string) ([]*registry.ServiceInstance, error) {
+	key := fmt.Sprintf("%s/%s", r.opts.namespace, name)
+	resp, err := r.kv.Get(ctx, key, clientv3.WithPrefix())
+	if err != nil {
+		return nil, err
 	}
-	ss, _ := set.services.Load().([]*registry.ServiceInstance)
-	if ss == nil {
-		return nil, fmt.Errorf("service %s not found in registry", name)
+	var items []*registry.ServiceInstance
+	for _, kv := range resp.Kvs {
+		si, err := unmarshal(kv.Value)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, si)
 	}
-	for _, s := range ss {
-		services = append(services, s)
-	}
-	return
+	return items, nil
 }
 
 // Watch creates a watcher according to the service name.
 func (r *Registry) Watch(ctx context.Context, name string) (registry.Watcher, error) {
-	r.lock.Lock()
-	defer r.lock.Unlock()
-	set, ok := r.registry[name]
-	if ok {
-		return nil, errors.New("service had been watch")
-	}
-
-	set = &serviceSet{
-		services:    &atomic.Value{},
-		serviceName: name,
-	}
-	r.registry[name] = set
-	w := newWatcher(r.opt.prefixPath, set, r.cli)
-	w.ctx, w.cancel = context.WithCancel(context.Background())
-	set.lock.Lock()
-	set.watcher = w
-	set.lock.Unlock()
-	ss, _ := set.services.Load().([]*registry.ServiceInstance)
-	if len(ss) > 0 {
-		w.event <- struct{}{}
-	}
-	return w, nil
+	key := fmt.Sprintf("%s/%s", r.opts.namespace, name)
+	return newWatcher(ctx, key, r.client), nil
 }
