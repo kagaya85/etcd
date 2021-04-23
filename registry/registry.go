@@ -83,6 +83,9 @@ func (r *Registry) Register(ctx context.Context, service *registry.ServiceInstan
 		return err
 	}
 	hb, err := r.client.KeepAlive(ctx, clientv3.LeaseID(grant.ID))
+	if err != nil {
+		return err
+	}
 	go func() {
 		for {
 			select {
