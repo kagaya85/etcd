@@ -3,7 +3,6 @@ package registry
 import (
 	"context"
 	"fmt"
-	"log"
 	"math/rand"
 	"time"
 
@@ -36,7 +35,7 @@ func Namespace(ns string) Option {
 	return func(o *options) { o.namespace = ns }
 }
 
-// RegisterTTL with registerWithKV ttl.
+// RegisterTTL with register ttl.
 func RegisterTTL(ttl time.Duration) Option {
 	return func(o *options) { o.ttl = ttl }
 }
@@ -151,19 +150,40 @@ func (r *Registry) heartBeat(ctx context.Context, leaseID clientv3.LeaseID, key 
 	for {
 		if curLeaseID == 0 {
 			// try to registerWithKV
-			retryCnt := 0
-			retreat := []int{1}
-			for retryCnt < r.opts.retryNum {
+			retreat := []int{}
+			for retryCnt := 0; retryCnt < r.opts.retryNum; retryCnt++ {
 				if ctx.Err() != nil {
 					return
 				}
-				log.Printf("retry: %d", retryCnt)
-				curLeaseID, _ = r.registerWithKV(ctx, key, value)
+				//log.Printf("retry: %d", retryCnt)
+
+				// prevent infinite blocking
+				idChan := make(chan clientv3.LeaseID, 1)
+				errChan := make(chan error, 1)
+				cancelCtx, cancel := context.WithCancel(ctx)
+				go func() {
+					defer cancel()
+					id, err := r.registerWithKV(cancelCtx, key, value)
+					if err != nil {
+						errChan <- err
+					} else {
+						idChan <- id
+					}
+				}()
+
+				select {
+				case <-time.After(3 * time.Second):
+					cancel()
+					continue
+				case <-errChan:
+					continue
+				case curLeaseID = <-idChan:
+				}
+
 				kac, err = r.client.KeepAlive(ctx, curLeaseID)
 				if err == nil {
 					break
 				}
-				retryCnt++
 				retreat = append(retreat, 1<<retryCnt)
 				time.Sleep(time.Duration(retreat[rand.Intn(len(retreat))]) * time.Second)
 			}

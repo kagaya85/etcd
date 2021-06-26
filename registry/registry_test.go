@@ -136,7 +136,6 @@ func TestHeartBeat(t *testing.T) {
 	go r.heartBeat(ctx, leaseID, key, value)
 
 	time.Sleep(time.Second)
-
 	res, err = r.GetService(ctx, s.Name)
 	if err != nil {
 		t.Fatal(err)
