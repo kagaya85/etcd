@@ -22,7 +22,7 @@ type options struct {
 	ctx       context.Context
 	namespace string
 	ttl       time.Duration
-	retryNum  int
+	maxRetry  int
 }
 
 // Context with registry context.
@@ -40,8 +40,8 @@ func RegisterTTL(ttl time.Duration) Option {
 	return func(o *options) { o.ttl = ttl }
 }
 
-func RetryNum(num int) Option {
-	return func(o *options) { o.retryNum = num }
+func MaxRetry(num int) Option {
+	return func(o *options) { o.maxRetry = num }
 }
 
 // Registry is etcd registry.
@@ -58,7 +58,7 @@ func New(client *clientv3.Client, opts ...Option) (r *Registry) {
 		ctx:       context.Background(),
 		namespace: "/microservices",
 		ttl:       time.Second * 15,
-		retryNum:  5,
+		maxRetry:  5,
 	}
 	for _, o := range opts {
 		o(options)
@@ -151,7 +151,7 @@ func (r *Registry) heartBeat(ctx context.Context, leaseID clientv3.LeaseID, key 
 		if curLeaseID == 0 {
 			// try to registerWithKV
 			retreat := []int{}
-			for retryCnt := 0; retryCnt < r.opts.retryNum; retryCnt++ {
+			for retryCnt := 0; retryCnt < r.opts.maxRetry; retryCnt++ {
 				if ctx.Err() != nil {
 					return
 				}

@@ -111,7 +111,7 @@ func TestHeartBeat(t *testing.T) {
 	// new a server
 	r := New(client,
 		RegisterTTL(2*time.Second),
-		RetryNum(5),
+		MaxRetry(5),
 	)
 
 	key := fmt.Sprintf("%s/%s/%s", r.opts.namespace, s.Name, s.ID)
