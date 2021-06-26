@@ -3,6 +3,8 @@ package registry
 import (
 	"context"
 	"fmt"
+	"log"
+	"math/rand"
 	"time"
 
 	"github.com/go-kratos/kratos/v2/registry"
@@ -21,6 +23,7 @@ type options struct {
 	ctx       context.Context
 	namespace string
 	ttl       time.Duration
+	retryNum  int
 }
 
 // Context with registry context.
@@ -33,9 +36,13 @@ func Namespace(ns string) Option {
 	return func(o *options) { o.namespace = ns }
 }
 
-// RegisterTTL with register ttl.
+// RegisterTTL with registerWithKV ttl.
 func RegisterTTL(ttl time.Duration) Option {
 	return func(o *options) { o.ttl = ttl }
+}
+
+func RetryNum(num int) Option {
+	return func(o *options) { o.retryNum = num }
 }
 
 // Registry is etcd registry.
@@ -52,6 +59,7 @@ func New(client *clientv3.Client, opts ...Option) (r *Registry) {
 		ctx:       context.Background(),
 		namespace: "/microservices",
 		ttl:       time.Second * 15,
+		retryNum:  5,
 	}
 	for _, o := range opts {
 		o(options)
@@ -74,30 +82,12 @@ func (r *Registry) Register(ctx context.Context, service *registry.ServiceInstan
 		r.lease.Close()
 	}
 	r.lease = clientv3.NewLease(r.client)
-	grant, err := r.lease.Grant(ctx, int64(r.opts.ttl.Seconds()))
+	leaseID, err := r.registerWithKV(ctx, key, value)
 	if err != nil {
 		return err
 	}
-	_, err = r.client.Put(ctx, key, value, clientv3.WithLease(grant.ID))
-	if err != nil {
-		return err
-	}
-	hb, err := r.client.KeepAlive(ctx, clientv3.LeaseID(grant.ID))
-	if err != nil {
-		return err
-	}
-	go func() {
-		for {
-			select {
-			case _, ok := <-hb:
-				if !ok {
-					return
-				}
-			case <-r.opts.ctx.Done():
-				return
-			}
-		}
-	}()
+
+	go r.heartBeat(ctx, leaseID, key, value)
 	return nil
 }
 
@@ -135,4 +125,67 @@ func (r *Registry) GetService(ctx context.Context, name string) ([]*registry.Ser
 func (r *Registry) Watch(ctx context.Context, name string) (registry.Watcher, error) {
 	key := fmt.Sprintf("%s/%s", r.opts.namespace, name)
 	return newWatcher(ctx, key, r.client), nil
+}
+
+// registerWithKV create a new lease, return current leaseID
+func (r *Registry) registerWithKV(ctx context.Context, key string, value string) (clientv3.LeaseID, error) {
+	grant, err := r.lease.Grant(ctx, int64(r.opts.ttl.Seconds()))
+	if err != nil {
+		return 0, err
+	}
+	_, err = r.client.Put(ctx, key, value, clientv3.WithLease(grant.ID))
+	if err != nil {
+		return 0, err
+	}
+	return grant.ID, nil
+}
+
+func (r *Registry) heartBeat(ctx context.Context, leaseID clientv3.LeaseID, key string, value string) {
+	curLeaseID := leaseID
+	kac, err := r.client.KeepAlive(ctx, leaseID)
+	if err != nil {
+		curLeaseID = 0
+	}
+	rand.Seed(time.Now().Unix())
+
+	for {
+		if curLeaseID == 0 {
+			// try to registerWithKV
+			retryCnt := 0
+			retreat := []int{1}
+			for retryCnt < r.opts.retryNum {
+				if ctx.Err() != nil {
+					return
+				}
+				log.Printf("retry: %d", retryCnt)
+				curLeaseID, _ = r.registerWithKV(ctx, key, value)
+				kac, err = r.client.KeepAlive(ctx, curLeaseID)
+				if err == nil {
+					break
+				}
+				retryCnt++
+				retreat = append(retreat, 1<<retryCnt)
+				time.Sleep(time.Duration(retreat[rand.Intn(len(retreat))]) * time.Second)
+			}
+			if _, ok := <-kac; !ok {
+				// retry failed
+				return
+			}
+		}
+
+		select {
+		case _, ok := <-kac:
+			if !ok {
+				if ctx.Err() != nil {
+					// channel closed due to context cancel
+					return
+				}
+				// need to retry registration
+				curLeaseID = 0
+				continue
+			}
+		case <-r.opts.ctx.Done():
+			return
+		}
+	}
 }
