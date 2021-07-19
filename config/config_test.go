@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"google.golang.org/grpc"
 	"testing"
 	"time"
 
@@ -11,7 +12,8 @@ import (
 const testKey = "/kratos/test/config"
 
 func TestConfig(t *testing.T) {
-	client, err := clientv3.New(clientv3.Config{Endpoints: []string{"127.0.0.1:2379"}, DialTimeout: time.Second})
+	client, err := clientv3.New(clientv3.Config{Endpoints: []string{"127.0.0.1:2379"},
+		DialTimeout: time.Second, DialOptions: []grpc.DialOption{grpc.WithBlock()}})
 	if err != nil {
 		t.Fatal(err)
 	}
