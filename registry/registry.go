@@ -86,7 +86,7 @@ func (r *Registry) Register(ctx context.Context, service *registry.ServiceInstan
 		return err
 	}
 
-	go r.heartBeat(ctx, leaseID, key, value)
+	go r.heartBeat(context.Background(), leaseID, key, value)
 	return nil
 }
 
