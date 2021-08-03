@@ -18,7 +18,6 @@ type watcher struct {
 	watchChan clientv3.WatchChan
 	watcher   clientv3.Watcher
 	kv        clientv3.KV
-	ch        clientv3.WatchChan
 }
 
 func newWatcher(ctx context.Context, key string, client *clientv3.Client) *watcher {
@@ -39,20 +38,20 @@ func (w *watcher) Next() ([]*registry.ServiceInstance, error) {
 		case <-w.ctx.Done():
 			return nil, w.ctx.Err()
 		case <-w.watchChan:
-		}
-		resp, err := w.kv.Get(w.ctx, w.key, clientv3.WithPrefix())
-		if err != nil {
-			return nil, err
-		}
-		var items []*registry.ServiceInstance
-		for _, kv := range resp.Kvs {
-			si, err := unmarshal(kv.Value)
+			resp, err := w.kv.Get(w.ctx, w.key, clientv3.WithPrefix())
 			if err != nil {
 				return nil, err
 			}
-			items = append(items, si)
+			var items []*registry.ServiceInstance
+			for _, kv := range resp.Kvs {
+				si, err := unmarshal(kv.Value)
+				if err != nil {
+					return nil, err
+				}
+				items = append(items, si)
+			}
+			return items, nil
 		}
-		return items, nil
 	}
 }
 
