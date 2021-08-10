@@ -2,7 +2,6 @@ package registry
 
 import (
 	"context"
-
 	"github.com/go-kratos/kratos/v2/registry"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
@@ -19,6 +18,9 @@ type watcher struct {
 	watcher   clientv3.Watcher
 	kv        clientv3.KV
 	ch        clientv3.WatchChan
+
+	// is first use Next() ?
+	first bool
 }
 
 func newWatcher(ctx context.Context, key string, client *clientv3.Client) *watcher {
@@ -26,6 +28,7 @@ func newWatcher(ctx context.Context, key string, client *clientv3.Client) *watch
 		key:     key,
 		watcher: clientv3.NewWatcher(client),
 		kv:      clientv3.NewKV(client),
+		first:   true,
 	}
 	w.ctx, w.cancel = context.WithCancel(ctx)
 	w.watchChan = w.watcher.Watch(w.ctx, key, clientv3.WithPrefix(), clientv3.WithRev(0))
@@ -34,11 +37,16 @@ func newWatcher(ctx context.Context, key string, client *clientv3.Client) *watch
 }
 
 func (w *watcher) Next() ([]*registry.ServiceInstance, error) {
+	if w.first {
+		defer func() { w.first = false }()
+	}
 	for {
-		select {
-		case <-w.ctx.Done():
-			return nil, w.ctx.Err()
-		case <-w.watchChan:
+		if !w.first {
+			select {
+			case <-w.ctx.Done():
+				return nil, w.ctx.Err()
+			case <-w.watchChan:
+			}
 		}
 		resp, err := w.kv.Get(w.ctx, w.key, clientv3.WithPrefix())
 		if err != nil {
