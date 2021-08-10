@@ -38,9 +38,9 @@ func newWatcher(ctx context.Context, key string, client *clientv3.Client) *watch
 
 func (w *watcher) Next() ([]*registry.ServiceInstance, error) {
 	if w.first {
-		defer func() { w.first = false }()
-	} else {
-		return w.getInstance()
+		item, err := w.getInstance()
+		w.first = false
+		return item, err
 	}
 
 	for {
