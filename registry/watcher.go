@@ -43,14 +43,13 @@ func (w *watcher) Next() ([]*registry.ServiceInstance, error) {
 		return item, err
 	}
 
-	for {
-		select {
-		case <-w.ctx.Done():
-			return nil, w.ctx.Err()
-		case <-w.watchChan:
-			return w.getInstance()
-		}
+	select {
+	case <-w.ctx.Done():
+		return nil, w.ctx.Err()
+	case <-w.watchChan:
+		return w.getInstance()
 	}
+
 }
 
 func (w *watcher) Stop() error {
